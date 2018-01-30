@@ -1,0 +1,12 @@
+/gatling/conf/generated.keystore
+logs
+target
+/.idea
+/.idea_modules
+/.classpath
+/.project
+/.settings
+/RUNNING_PID
+releases
+/local.sbt
+/buildinfo.properties

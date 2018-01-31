@@ -10,3 +10,9 @@ target
 releases
 /local.sbt
 /buildinfo.properties
+crypto/
+/repositories-truststore.jks
+/repositories
+/sbt
+/sbt-launch.jar
+/stubber.cfg

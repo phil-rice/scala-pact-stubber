@@ -1,6 +1,7 @@
 package com.ing.pact.stubber
 
 import java.io.File
+import java.util.ResourceBundle
 import javax.net.ssl.SSLContext
 
 import com.itv.scalapact.shared.ColourOuput._
@@ -16,23 +17,26 @@ import scala.concurrent.ExecutionContext.Implicits._
 import scala.concurrent.duration._
 import scala.io.Source
 
-case class ServerSpec(name: String, port: Int, strict: Boolean, sslContext: Option[SSLContext], pacts: List[File])
+case class ServerSpec(name: String, port: Int, strict: Boolean, sslContext: Option[SSLContext], pacts: List[File], errorsAbort: Boolean)
 
 
 object ServerSpec {
 
   implicit object FromConfigForServerSpec extends FromConfigWithKey[ServerSpec] with Pimpers {
-    override def apply(name: String, config: Config): ServerSpec =
+
+    override def apply(name: String, config: Config): ServerSpec = {
       ServerSpec(name,
         port = config.getInt("port"),
         strict = false,
         sslContext = config.getOption[SSLContext]("ssl-context"),
-        pacts = config.getFiles("directory")(_.getName.endsWith(".json")))
+        pacts = config.getFiles("directory")(_.getName.endsWith(".json")),
+        errorsAbort = config.getBoolean("errorsAbort"))
+    }
 
   }
 
   implicit class ServerSpecPimper(spec: ServerSpec)(implicit executionContext: ExecutionContext) extends Pimpers {
-    def toBlaizeServer(pacts: Seq[Pact]) = {
+    def toBlaizeServer(pacts: Seq[Pact]) = pacts.isEmpty.toOption {
       val interactionManager = pacts.foldLeft(new InteractionManager) { (im, t) => t.interactions ==> im.addInteractions; im }
       BlazeBuilder
         .bindHttp(spec.port, "localhost")
@@ -43,7 +47,10 @@ object ServerSpec {
         .mountService(ServiceMaker.service(interactionManager, spec.strict), "/")
         .run
     }
+  }
 
+  implicit object MessageFormatDataForServerSpec extends MessageFormatData[ServerSpec] with Pimpers {
+    override def apply(spec: ServerSpec): Seq[String] = Seq(spec.name, spec.port.toString, spec.sslContext.asString("http", _ => "https"))
   }
 
   def loadPacts: ServerSpec => List[Either[String, Pact]] = { serverSpec: ServerSpec => serverSpec.pacts.map(Source.fromFile(_, "UTF-8").mkString).map(pactReader.jsonStringToPact) }
@@ -54,21 +61,25 @@ case class ServerSpecAndPacts(spec: ServerSpec, issuesAndPacts: List[Either[Stri
 
 
 object ServerSpecAndPacts extends Pimpers {
-  def printIssuesAndReturnPacts(title: String)(serverSpecAndPacts: ServerSpecAndPacts): Seq[Pact] = {
-    serverSpecAndPacts.issuesAndPacts.printWithTitle(title)
+  def printIssuesAndReturnPacts(title: String)(serverSpecAndPacts: ServerSpecAndPacts)(implicit resourceBundle: ResourceBundle): Seq[Pact] = {
+    serverSpecAndPacts.issuesAndPacts.printWithTitle(title, ())
     serverSpecAndPacts.issuesAndPacts.values
   }
 }
 
 object Stubber extends App with Pimpers {
-  PactLogger.message("*************************************".white.bold)
-  PactLogger.message("** ScalaPact: Running Stubber      **".white.bold)
-  PactLogger.message("*************************************".white.bold)
+  implicit val resources: ResourceBundle = ResourceBundle.getBundle("messages")
+  PactLogger.message(resources.getString("header.running"))
 
+  implicit def errorStrategy[L, R](implicit spec: ServerSpec): ErrorStrategy[L, R] = spec.errorsAbort match {
+    case false => ErrorStrategy.printErrorsAndUseGood("error.loading.server", spec.name)
+    case true => ErrorStrategy.printErrorsAndAbort("error.loading.server", spec.name)
+  }
 
-  def printPactData[L, R](spec: ServerSpec) = printIssuesAndReturnvalues[L, R](s"Issues loading server ${spec.name}") ===> printMsg(pacts => s"Starting on Port ${spec.port} with ${pacts.length} pacts")
+  def handleErrors(seq: Seq[Either[String, Pact]])(implicit spec: ServerSpec) = seq.handleErrors
+  def printServerStarting(pacts: Seq[Pact])(implicit spec: ServerSpec) = pacts.ifNotEmpty("message.loading.server".printlnFromBundle(spec, pacts))
 
-  new File("stubber.cfg") ==> ConfigFactory.parseFile ==> makeListFromConfig[ServerSpec](key = "servers") mapWith { spec => ServerSpec.loadPacts ===> printPactData(spec) ===> spec.toBlaizeServer }
+  new File("stubber.cfg") ==> ConfigFactory.parseFile ==> makeListFromConfig[ServerSpec](key = "servers") mapWith { implicit spec => ServerSpec.loadPacts ===> handleErrors =^> printServerStarting ===> spec.toBlaizeServer }
 
   while (true)
     Thread.sleep(10000000)
